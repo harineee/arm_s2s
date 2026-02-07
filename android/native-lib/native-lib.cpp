@@ -1,0 +1,165 @@
+/**
+ * JNI bridge for Android
+ * Provides Java interface to C++ pipeline
+ */
+
+#include <jni.h>
+#include <string>
+#include <memory>
+#include <android/log.h>
+#include "pipeline/pipeline.h"
+
+#define LOG_TAG "NativePipeline"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+
+static std::unique_ptr<Pipeline> g_pipeline = nullptr;
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_armm_translation_NativePipeline_nativeInit(
+    JNIEnv *env,
+    jobject /* this */,
+    jstring asr_model_path,
+    jstring mt_model_path,
+    jstring tts_model_path) {
+    
+    if (g_pipeline) {
+        LOGE("Pipeline already initialized");
+        return JNI_FALSE; // Already initialized
+    }
+    
+    LOGI("Initializing pipeline...");
+    g_pipeline = std::make_unique<Pipeline>();
+    
+    PipelineConfig config;
+    
+    // Convert Java strings to C++ strings
+    const char* asr_path = env->GetStringUTFChars(asr_model_path, nullptr);
+    const char* mt_path = env->GetStringUTFChars(mt_model_path, nullptr);
+    const char* tts_path = env->GetStringUTFChars(tts_model_path, nullptr);
+    
+    config.asr_model_path = asr_path ? asr_path : "";
+    config.mt_model_path = mt_path ? mt_path : "";
+    config.tts_model_path = tts_path ? tts_path : "";
+    
+    LOGI("Model paths - ASR: %s, MT: %s, TTS: %s", 
+         config.asr_model_path.c_str(),
+         config.mt_model_path.c_str(),
+         config.tts_model_path.c_str());
+    
+    env->ReleaseStringUTFChars(asr_model_path, asr_path);
+    env->ReleaseStringUTFChars(mt_model_path, mt_path);
+    env->ReleaseStringUTFChars(tts_model_path, tts_path);
+    
+    bool success = g_pipeline->init(config);
+    
+    if (!success) {
+        LOGE("Pipeline initialization failed");
+        g_pipeline.reset();
+    } else {
+        LOGI("Pipeline initialized successfully");
+    }
+    
+    return success ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_armm_translation_NativePipeline_nativeStart(
+    JNIEnv *env,
+    jobject /* this */) {
+    
+    if (!g_pipeline) {
+        LOGE("Cannot start: pipeline not initialized");
+        return JNI_FALSE;
+    }
+    
+    LOGI("Starting pipeline...");
+    bool success = g_pipeline->start();
+    if (success) {
+        LOGI("Pipeline started successfully");
+    } else {
+        LOGE("Pipeline start failed");
+    }
+    
+    return success ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_armm_translation_NativePipeline_nativeStop(
+    JNIEnv *env,
+    jobject /* this */) {
+    
+    if (g_pipeline) {
+        g_pipeline->stop();
+        g_pipeline.reset();
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_armm_translation_NativePipeline_nativePushAudio(
+    JNIEnv *env,
+    jobject /* this */,
+    jfloatArray audio_samples) {
+    
+    if (!g_pipeline) {
+        return;
+    }
+    
+    jsize len = env->GetArrayLength(audio_samples);
+    jfloat* samples = env->GetFloatArrayElements(audio_samples, nullptr);
+    
+    if (samples) {
+        g_pipeline->push_audio(samples, len);
+        env->ReleaseFloatArrayElements(audio_samples, samples, JNI_ABORT);
+    }
+}
+
+extern "C" JNIEXPORT jfloatArray JNICALL
+Java_com_armm_translation_NativePipeline_nativePopAudio(
+    JNIEnv *env,
+    jobject /* this */) {
+    
+    if (!g_pipeline) {
+        return nullptr;
+    }
+    
+    std::vector<float> audio_samples;
+    if (!g_pipeline->pop_audio(audio_samples)) {
+        return nullptr;
+    }
+    
+    jfloatArray result = env->NewFloatArray(audio_samples.size());
+    if (result) {
+        env->SetFloatArrayRegion(result, 0, audio_samples.size(), 
+                                audio_samples.data());
+    }
+    
+    return result;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_armm_translation_NativePipeline_nativeGetCurrentEnglish(
+    JNIEnv *env,
+    jobject /* this */) {
+    
+    if (!g_pipeline) {
+        return env->NewStringUTF("");
+    }
+    
+    std::string text = g_pipeline->get_current_english();
+    return env->NewStringUTF(text.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_armm_translation_NativePipeline_nativeGetCurrentHindi(
+    JNIEnv *env,
+    jobject /* this */) {
+    
+    if (!g_pipeline) {
+        return env->NewStringUTF("");
+    }
+    
+    std::string text = g_pipeline->get_current_hindi();
+    return env->NewStringUTF(text.c_str());
+}

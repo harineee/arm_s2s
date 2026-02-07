@@ -1,0 +1,6 @@
+# Submodules for external dependencies
+# Initialize with: git submodule update --init --recursive
+
+[submodule "asr/whisper_cpp"]
+	path = asr/whisper_cpp
+	url = https://github.com/ggerganov/whisper.cpp.git
