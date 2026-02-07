@@ -1,5 +1,5 @@
 /**
- * Desktop CPU inference entry point
+ * Host (desktop) inference entry point
  * Runs the speech-to-speech translation pipeline on host CPU
  */
 
