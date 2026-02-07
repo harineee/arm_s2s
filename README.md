@@ -36,7 +36,7 @@ On-device, CPU-only, fully offline speech-to-speech translation for ARM Android 
 - 3 pipeline threads + system audio threads
 - Lock-free SPSC queues (cache-line aligned, power-of-2 capacity)
 - Phrase-level translation (pause detection, 1-8 word boundaries)
-- No Python runtime dependencies — pure C++
+- No Python runtime dependencies- pure C++
 
 ---
 
@@ -84,7 +84,7 @@ armm/
 └── README.md
 ```
 
-## Installation — Step by Step
+## Installation - Step by Step
 
 ### 1. Clone Repository
 
@@ -113,10 +113,10 @@ sudo apt install cmake g++ git libportaudio2 portaudio19-dev
 # ASR model (75 MB)
 ./scripts/download_asr_model.sh
 
-# MT model — download OPUS-MT EN→HI and export to ONNX
+# MT model - download OPUS-MT EN→HI and export to ONNX
 ./scripts/download_mt_model.sh
 
-# TTS model — download Piper Hindi voice
+# TTS model - download Piper Hindi voice
 ./scripts/download_tts_model.sh
 ```
 
@@ -153,7 +153,7 @@ Total: **~1 GB → ~231 MB** (fits in mobile RAM).
 
 ---
 
-## Build — Desktop
+## Build - Desktop
 
 ```bash
 ./scripts/build_desktop.sh
@@ -168,7 +168,7 @@ cmake --build . -j$(nproc)
 
 ---
 
-## Build — Android APK
+## Build - Android APK
 
 ### 1. Prepare Models for APK
 
@@ -194,7 +194,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ---
 
-## Running — Desktop
+## Running - Desktop
 
 ### File Mode (no microphone)
 
@@ -215,12 +215,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
     --mt-model models/mt/onnx/encoder_model.onnx \
     --tts-model models/tts/hi_IN-rohan-medium.onnx
 
-## Running — Android
+## Running - Android
 
 1. Install APK (see above)
 2. Open "ARMM Translation" app
 3. Grant microphone permission
-4. Tap **Start** — speak English into the mic
+4. Tap **Start** - speak English into the mic
 5. Hindi text appears on screen, Hindi audio plays through speaker
 6. Tap **Stop** to end
 
@@ -241,7 +241,7 @@ adb shell cat /sys/class/thermal/thermal_zone*/temp
 ```
 
 
-## Mobile Setup — Laptop Requirements
+## Mobile Setup - Laptop Requirements
 
 **Install all of these on your laptop/build machine:**
 
@@ -275,7 +275,7 @@ adb version         # installed
 ndk-build --version # NDK accessible
 ```
 
-## Mobile Setup — Android Phone Requirements
+## Mobile Setup - Android Phone Requirements
 
 **On the phone itself:**
 
@@ -284,7 +284,7 @@ ndk-build --version # NDK accessible
 3. **Connect via USB** and authorize the laptop
 4. **Verify:** `adb devices` shows your device
 5. **Storage:** Ensure ≥ 500 MB free internal storage
-6. **No additional apps** required — everything runs as a native APK
+6. **No additional apps** required - everything runs as a native APK
 
 ---
 
