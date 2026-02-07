@@ -1,4 +1,4 @@
-# ARMM — Real-Time English → Hindi Speech-to-Speech Translation
+# ARM-- Real-Time English → Hindi Speech-to-Speech Translation
 
 On-device, CPU-only, fully offline speech-to-speech translation for ARM Android and x86 desktop.
 
@@ -15,20 +15,20 @@ On-device, CPU-only, fully offline speech-to-speech translation for ARM Android 
 │  Audio In (16 kHz mono)                                              │
 │       ↓                                                              │
 │  ┌─────────────────┐    Lock-Free     ┌──────────────────┐           │
-│  │  ASR Thread      │───  Queue  ────→│  MT Thread        │          │
-│  │  whisper.cpp     │    (SPSC)       │  Marian ONNX      │          │
-│  │  tiny.en INT8    │                 │  encoder-decoder   │          │
-│  │  2 threads       │                 │  SentencePiece     │          │
-│  └─────────────────┘                  │  2 ONNX threads    │          │
-│                                       └────────┬───────────┘          │
-│                                                │                      │
-│                           Lock-Free            ↓                      │
+│  │  ASR Thread     │───  Queue  ────→ │  MT Thread       │           │
+│  │  whisper.cpp    │    (SPSC)        │  Marian ONNX     │           │
+│  │  tiny.en INT8   │                  │  encoder-decoder │           │
+│  │  2 threads      │                  │  SentencePiece   │           │
+│  └─────────────────┘                  │  2 ONNX threads  │           │
+│                                       └────────┬─────────┘           │
+│                                                │                     │
+│                           Lock-Free            ↓                     │
 │  ┌─────────────────┐←───  Queue  ────┌──────────────────┐            │
-│  │  Audio Out       │    (SPSC)      │  TTS Thread       │            │
-│  │  16 kHz mono     │               │  Piper VITS ONNX   │            │
-│  └─────────────────┘                │  Hindi phonemizer   │            │
-│                                     │  1 ONNX thread      │            │
-│                                     └──────────────────┘              │
+│  │  Audio Out      │    (SPSC)       │  TTS Thread      │            │
+│  │  16 kHz mono    │                 │  Piper VITS ONNX │            │
+│  └─────────────────┘                 │  Hindi phonemizer│            │
+│                                      │  1 ONNX thread   │            │
+│                                      └──────────────────┘            │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -84,38 +84,6 @@ armm/
 └── README.md
 ```
 
----
-
-## Dependencies
-
-### Laptop / Build Machine
-
-| Dependency | Version | Purpose | Install |
-|---|---|---|---|
-| CMake | ≥ 3.18 | Build system | `apt install cmake` |
-| GCC/Clang | C++17 | Compiler | `apt install g++` |
-| Git | any | Submodules | `apt install git` |
-| ONNX Runtime C++ | ≥ 1.16 | MT + TTS inference | `conda install onnxruntime-cpp -c conda-forge` |
-| SentencePiece C++ | ≥ 0.1.99 | MT tokenization | `conda install sentencepiece -c conda-forge` |
-| PortAudio | ≥ 19 | Real-time mic (optional) | `apt install libportaudio2 portaudio19-dev` |
-| Android SDK | 34 | Android build | Android Studio |
-| Android NDK | r25+ | Native compilation | Android Studio SDK Manager |
-| Python 3 | ≥ 3.9 | Model quantization only | System Python |
-| onnxruntime (pip) | ≥ 1.16 | Quantization script | `pip install onnxruntime` |
-
-### Android Phone
-
-| Requirement | Detail |
-|---|---|
-| Architecture | ARMv8-A (arm64-v8a) |
-| Android | API 26+ (Android 8.0+) |
-| RAM | ≥ 4 GB (6 GB recommended) |
-| Storage | ~400 MB for all models |
-| Permissions | Microphone (RECORD_AUDIO) |
-| Network | Not required (fully offline) |
-
----
-
 ## Installation — Step by Step
 
 ### 1. Clone Repository
@@ -162,7 +130,7 @@ ls -lh models/tts/hi_IN-rohan-medium.onnx   # ~61 MB
 
 ---
 
-## Model Quantization (Required for Mobile)
+## Model Quantisation (Required for Mobile)
 
 Quantize FP32 ONNX models to INT8:
 
@@ -246,11 +214,6 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
     --asr-model models/asr/ggml-tiny.en.bin \
     --mt-model models/mt/onnx/encoder_model.onnx \
     --tts-model models/tts/hi_IN-rohan-medium.onnx
-```
-
-Press Ctrl+C to stop.
-
----
 
 ## Running — Android
 
@@ -277,68 +240,6 @@ adb shell top -H -p $(adb shell pidof com.armm.translation)
 adb shell cat /sys/class/thermal/thermal_zone*/temp
 ```
 
----
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| `whisper.cpp not found` | Submodule not initialized | `git submodule update --init --recursive` |
-| `ONNX Runtime not found` | Library not installed | `conda install onnxruntime-cpp -c conda-forge` |
-| `SentencePiece not found` | Library not installed | `conda install sentencepiece -c conda-forge` |
-| `Failed to load source.spm` | Missing tokenizer file | Re-run `./scripts/download_mt_model.sh` |
-| `TTS ONNX model not found` | Model not downloaded | Re-run `./scripts/download_tts_model.sh` |
-| Test tone instead of speech | TTS model missing or init failed | Check model path and ONNX Runtime availability |
-| `[HI: ...]` placeholder text | MT model not loaded | Verify ONNX models exist in `models/mt/onnx/` |
-| App crash on Android | OOM — models too large | Quantize models to INT8 first |
-| Silence on Android | Audio permission denied | Grant RECORD_AUDIO in settings |
-| Very slow translation | No KV cache / FP32 models | Use INT8 models; KV cache is auto-attempted |
-| Build error: `-ffast-math` | whisper.cpp incompatibility | Already fixed — ensure CMake uses `-funroll-loops` not `-ffast-math` |
-
----
-
-## Performance Expectations
-
-### Desktop (x86_64, 4-core, 3.5 GHz)
-
-| Component | Latency |
-|---|---|
-| ASR (1s audio chunk) | ~100-200 ms |
-| MT (5-word phrase) | ~200-500 ms |
-| TTS (short phrase) | ~300-600 ms |
-| **End-to-end** | **~600-1300 ms** |
-
-### Android (Snapdragon 8-series, INT8 quantized)
-
-| Component | Latency (estimated) |
-|---|---|
-| ASR | ~200-400 ms |
-| MT (with KV cache) | ~200-500 ms |
-| TTS | ~300-700 ms |
-| **End-to-end** | **~700-1600 ms** |
-
-### Model Sizes
-
-| Model | FP32 | INT8 |
-|---|---|---|
-| ASR (whisper tiny.en) | 75 MB | 75 MB (already quantized) |
-| MT (encoder + decoder + decoder_past) | 863 MB | ~216 MB |
-| TTS (Piper VITS Hindi) | 61 MB | ~15 MB |
-| **Total** | **999 MB** | **~306 MB** |
-
-### RAM Usage (INT8, Android)
-
-| Component | Estimated |
-|---|---|
-| ASR | ~130 MB |
-| MT (all sessions) | ~275 MB |
-| TTS | ~25 MB |
-| Pipeline + Android | ~70 MB |
-| **Total** | **~500 MB** |
-
-Fits within 4-6 GB device memory budget.
-
----
 
 ## Mobile Setup — Laptop Requirements
 
