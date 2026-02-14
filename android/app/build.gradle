@@ -59,12 +59,13 @@ android {
 
     // Compress models in assets (disable for large binary files)
     aaptOptions {
-        noCompress 'bin', 'onnx', 'spm', 'json'
+        noCompress 'bin', 'onnx', 'spm', 'json', 'pte'
     }
 
     // Limit APK to arm64-v8a only
     packagingOptions {
         pickFirst 'lib/arm64-v8a/libonnxruntime.so'
+        pickFirst 'lib/arm64-v8a/libexecutorch_jni.so'
     }
 }
 
@@ -72,4 +73,11 @@ dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+
+    // ExecuTorch for on-device LLM inference (Qwen3-0.6B)
+    implementation 'org.pytorch:executorch-android:0.7.0'
+
+    // Required by ExecuTorch AAR for JNI bridge
+    implementation 'com.facebook.soloader:soloader:0.10.5'
+    implementation 'com.facebook.fbjni:fbjni:0.7.0'
 }

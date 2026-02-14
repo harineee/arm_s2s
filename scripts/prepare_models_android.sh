@@ -137,6 +137,29 @@ if [ -f "$TTS_DIR/hi_IN-rohan-medium.onnx.json" ]; then
 fi
 
 # -------------------------------------------------------
+# Step 3b: LLM model (Qwen3-0.6B .pte)
+# -------------------------------------------------------
+echo ""
+echo "--- Step 3b: LLM model (Qwen3-0.6B) ---"
+
+LLM_PTE="$MODELS_DIR/llm/qwen3_0.6B.pte"
+LLM_TOK="$MODELS_DIR/llm/Qwen3-0.6B/tokenizer.json"
+LLM_DEST="$ASSETS_DIR/llm"
+
+if [ -f "$LLM_PTE" ]; then
+    mkdir -p "$LLM_DEST"
+    cp "$LLM_PTE" "$LLM_DEST/"
+    echo "  Copied: llm/qwen3_0.6B.pte ($(du -h "$LLM_PTE" | cut -f1))"
+    if [ -f "$LLM_TOK" ]; then
+        cp "$LLM_TOK" "$LLM_DEST/"
+        echo "  Copied: llm/tokenizer.json"
+    fi
+else
+    echo "  SKIP: LLM model not found at $LLM_PTE"
+    echo "  Run ./scripts/export_llm_model.sh to create it"
+fi
+
+# -------------------------------------------------------
 # Step 4: Size report
 # -------------------------------------------------------
 echo ""

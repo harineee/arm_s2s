@@ -71,6 +71,11 @@ private:
     std::unordered_map<std::string, std::string> basic_vocab_;
     void load_basic_vocab();
 
+    // vocab.json mapping (token string → model ID, and reverse)
+    std::unordered_map<std::string, int64_t> token_to_id_;
+    std::unordered_map<int64_t, std::string> id_to_token_;
+    bool load_vocab_json(const std::string& path);
+
     bool initialized_;
     std::string model_dir_;
 };

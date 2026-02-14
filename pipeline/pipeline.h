@@ -23,10 +23,17 @@ struct PipelineConfig {
     std::string asr_model_path;
     std::string mt_model_path;
     std::string tts_model_path;
-    
+
+    // LLM translation (ExecuTorch + Qwen3-0.6B)
+    std::string llm_model_path;       // Path to .pte file (empty = disabled)
+    std::string llm_tokenizer_path;   // Path to tokenizer.json
+
+    // Translation mode: 0=SPEED (NMT), 1=BALANCED (speculative), 2=QUALITY (LLM)
+    int translation_mode = 1;
+
     int sample_rate = 16000;
     int chunk_size_ms = 80;
-    
+
     // Threading
     bool pin_threads = true;
     int asr_thread_priority = 10;
@@ -57,11 +64,22 @@ public:
     // Flush ASR to process remaining audio
     void flush_asr();
 
+    // Wait for audio queue to drain (all audio processed by ASR)
+    void wait_audio_drained(int timeout_ms = 5000);
+
     // Get current status
     bool is_running() const { return running_; }
     std::string get_current_english() const { return current_english_; }
     std::string get_current_hindi() const { return current_hindi_; }
     
+    // Check if LLM backend is active
+    bool is_llm_active() const;
+
+    // Translation mode control
+    void set_translation_mode(int mode);
+    std::string get_translation_mode_name() const;
+    double get_mt_acceptance_rate() const;
+
     // Performance tracking
     PerformanceTracker* get_performance_tracker() { return perf_tracker_.get(); }
     void enable_performance_tracking(bool enable);

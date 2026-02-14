@@ -301,8 +301,13 @@ void process_audio_files(Pipeline& pipeline,
     }
     
     input_file.close();
-    std::cout << "\nFile read complete. Flushing ASR..." << std::endl;
-    
+    std::cout << "\nFile read complete. Waiting for ASR to drain..." << std::endl;
+
+    // Wait for audio queue to drain (ASR thread processes all pushed audio)
+    pipeline.wait_audio_drained(5000);
+
+    std::cout << "Flushing ASR..." << std::endl;
+
     // Flush ASR to process remaining audio
     pipeline.flush_asr();
     
@@ -364,10 +369,13 @@ int main(int argc, char* argv[]) {
     std::string asr_model_path;
     std::string mt_model_path;
     std::string tts_model_path;
+    std::string llm_model_path;
+    std::string llm_tokenizer_path;
+    std::string translation_mode_str;
     std::string input_wav;
     std::string output_wav;
     bool use_files = false;
-    
+
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         if (arg == "--asr-model" && i + 1 < argc) {
@@ -376,6 +384,12 @@ int main(int argc, char* argv[]) {
             mt_model_path = argv[++i];
         } else if (arg == "--tts-model" && i + 1 < argc) {
             tts_model_path = argv[++i];
+        } else if (arg == "--llm-model" && i + 1 < argc) {
+            llm_model_path = argv[++i];
+        } else if (arg == "--llm-tokenizer" && i + 1 < argc) {
+            llm_tokenizer_path = argv[++i];
+        } else if (arg == "--translation-mode" && i + 1 < argc) {
+            translation_mode_str = argv[++i];
         } else if (arg == "--input" && i + 1 < argc) {
             input_wav = argv[++i];
             use_files = true;
@@ -385,12 +399,15 @@ int main(int argc, char* argv[]) {
         } else if (arg == "--help") {
             std::cout << "Usage: " << argv[0] << " [options]" << std::endl;
             std::cout << "Options:" << std::endl;
-            std::cout << "  --asr-model PATH    Path to ASR model (required)" << std::endl;
-            std::cout << "  --mt-model PATH    Path to MT model (required)" << std::endl;
-            std::cout << "  --tts-model PATH   Path to TTS model (required)" << std::endl;
-            std::cout << "  --input PATH        Input WAV file (file mode)" << std::endl;
-            std::cout << "  --output PATH       Output WAV file (file mode)" << std::endl;
-            std::cout << "  --help             Show this help message" << std::endl;
+            std::cout << "  --asr-model PATH      Path to ASR model (required)" << std::endl;
+            std::cout << "  --mt-model PATH       Path to MT model (required)" << std::endl;
+            std::cout << "  --tts-model PATH      Path to TTS model (required)" << std::endl;
+            std::cout << "  --llm-model PATH      Path to LLM model (.pte file, optional)" << std::endl;
+            std::cout << "  --llm-tokenizer PATH  Path to LLM tokenizer (tokenizer.json, optional)" << std::endl;
+            std::cout << "  --translation-mode M  Translation mode: speed|balanced|quality (default: balanced)" << std::endl;
+            std::cout << "  --input PATH          Input WAV file (file mode)" << std::endl;
+            std::cout << "  --output PATH         Output WAV file (file mode)" << std::endl;
+            std::cout << "  --help                Show this help message" << std::endl;
             return 0;
         }
     }
@@ -407,6 +424,11 @@ int main(int argc, char* argv[]) {
     config.asr_model_path = asr_model_path;
     config.mt_model_path = mt_model_path;
     config.tts_model_path = tts_model_path;
+    config.llm_model_path = llm_model_path;
+    config.llm_tokenizer_path = llm_tokenizer_path;
+    if (translation_mode_str == "speed") config.translation_mode = 0;
+    else if (translation_mode_str == "quality") config.translation_mode = 2;
+    else config.translation_mode = 1; // balanced (default)
     config.sample_rate = 16000;
     config.chunk_size_ms = 80;
     
@@ -421,7 +443,14 @@ int main(int argc, char* argv[]) {
         std::cerr << "Failed to start pipeline" << std::endl;
         return 1;
     }
-    
+
+    std::cout << "Translation mode: " << pipeline.get_translation_mode_name() << std::endl;
+    if (pipeline.is_llm_active()) {
+        std::cout << "LLM backend: active (Qwen3-0.6B via ExecuTorch)" << std::endl;
+    } else {
+        std::cout << "LLM backend: inactive (using Marian NMT)" << std::endl;
+    }
+
     // Run audio processing
 #ifdef USE_PORTAUDIO
     if (!use_files) {
@@ -438,9 +467,16 @@ int main(int argc, char* argv[]) {
     }
 #endif
     
+    // Print speculative decoding stats if applicable
+    double acceptance = pipeline.get_mt_acceptance_rate();
+    if (acceptance > 0.0) {
+        std::cout << "Speculative acceptance rate: "
+                  << static_cast<int>(acceptance * 100) << "%" << std::endl;
+    }
+
     // Stop pipeline
     pipeline.stop();
-    
+
     std::cout << "Pipeline stopped." << std::endl;
     return 0;
 }

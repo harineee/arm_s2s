@@ -26,7 +26,6 @@ public class ModelManager {
         // MT encoder-decoder (ONNX, INT8 quantized)
         "models/mt/onnx/encoder_model.onnx",
         "models/mt/onnx/decoder_model.onnx",
-        "models/mt/onnx/decoder_with_past_model.onnx",
 
         // MT tokenizer
         "models/mt/onnx/source.spm",

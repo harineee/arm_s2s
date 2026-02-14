@@ -22,46 +22,65 @@ Java_com_armm_translation_NativePipeline_nativeInit(
     jobject /* this */,
     jstring asr_model_path,
     jstring mt_model_path,
-    jstring tts_model_path) {
-    
+    jstring tts_model_path,
+    jstring llm_model_path,
+    jstring llm_tokenizer_path,
+    jint translation_mode) {
+
     if (g_pipeline) {
         LOGE("Pipeline already initialized");
         return JNI_FALSE; // Already initialized
     }
-    
+
     LOGI("Initializing pipeline...");
     g_pipeline = std::make_unique<Pipeline>();
-    
+
     PipelineConfig config;
-    
+
     // Convert Java strings to C++ strings
     const char* asr_path = env->GetStringUTFChars(asr_model_path, nullptr);
     const char* mt_path = env->GetStringUTFChars(mt_model_path, nullptr);
     const char* tts_path = env->GetStringUTFChars(tts_model_path, nullptr);
-    
+    const char* llm_path = llm_model_path ? env->GetStringUTFChars(llm_model_path, nullptr) : nullptr;
+    const char* llm_tok_path = llm_tokenizer_path ? env->GetStringUTFChars(llm_tokenizer_path, nullptr) : nullptr;
+
     config.asr_model_path = asr_path ? asr_path : "";
     config.mt_model_path = mt_path ? mt_path : "";
     config.tts_model_path = tts_path ? tts_path : "";
-    
-    LOGI("Model paths - ASR: %s, MT: %s, TTS: %s", 
+    config.llm_model_path = llm_path ? llm_path : "";
+    config.llm_tokenizer_path = llm_tok_path ? llm_tok_path : "";
+    config.translation_mode = static_cast<int>(translation_mode);
+
+    LOGI("Model paths - ASR: %s, MT: %s, TTS: %s",
          config.asr_model_path.c_str(),
          config.mt_model_path.c_str(),
          config.tts_model_path.c_str());
-    
+    LOGI("LLM model: %s", config.llm_model_path.c_str());
+
     env->ReleaseStringUTFChars(asr_model_path, asr_path);
     env->ReleaseStringUTFChars(mt_model_path, mt_path);
     env->ReleaseStringUTFChars(tts_model_path, tts_path);
-    
+    if (llm_path) env->ReleaseStringUTFChars(llm_model_path, llm_path);
+    if (llm_tok_path) env->ReleaseStringUTFChars(llm_tokenizer_path, llm_tok_path);
+
     bool success = g_pipeline->init(config);
-    
+
     if (!success) {
         LOGE("Pipeline initialization failed");
         g_pipeline.reset();
     } else {
         LOGI("Pipeline initialized successfully");
     }
-    
+
     return success ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_armm_translation_NativePipeline_nativeIsLLMActive(
+    JNIEnv *env,
+    jobject /* this */) {
+    if (!g_pipeline) return JNI_FALSE;
+    return g_pipeline->is_llm_active() ? JNI_TRUE : JNI_FALSE;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -155,11 +174,41 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_armm_translation_NativePipeline_nativeGetCurrentHindi(
     JNIEnv *env,
     jobject /* this */) {
-    
+
     if (!g_pipeline) {
         return env->NewStringUTF("");
     }
-    
+
     std::string text = g_pipeline->get_current_hindi();
     return env->NewStringUTF(text.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_armm_translation_NativePipeline_nativeSetTranslationMode(
+    JNIEnv *env,
+    jobject /* this */,
+    jint mode) {
+    if (g_pipeline) {
+        g_pipeline->set_translation_mode(static_cast<int>(mode));
+        LOGI("Translation mode set to %d", static_cast<int>(mode));
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_armm_translation_NativePipeline_nativeGetTranslationMode(
+    JNIEnv *env,
+    jobject /* this */) {
+    if (!g_pipeline) {
+        return env->NewStringUTF("Unknown");
+    }
+    std::string mode = g_pipeline->get_translation_mode_name();
+    return env->NewStringUTF(mode.c_str());
+}
+
+extern "C" JNIEXPORT jdouble JNICALL
+Java_com_armm_translation_NativePipeline_nativeGetAcceptanceRate(
+    JNIEnv *env,
+    jobject /* this */) {
+    if (!g_pipeline) return 0.0;
+    return static_cast<jdouble>(g_pipeline->get_mt_acceptance_rate());
 }

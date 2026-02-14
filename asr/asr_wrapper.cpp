@@ -3,6 +3,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <iostream>
 
 ASRWrapper::ASRWrapper() : chunk_size_ms_(80) {
     ctx_ = nullptr;
@@ -103,7 +104,6 @@ std::string ASRWrapper::process_chunk(const float* audio_samples,
                 partial_text_ = text;
             } else {
                 // If no text but we processed audio, keep previous text
-                // Don't overwrite with empty string
             }
             
             // Keep last portion of buffer for context (overlap)

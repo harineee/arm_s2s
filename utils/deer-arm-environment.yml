@@ -1,4 +1,4 @@
-name: armhack
+name: deer-arm
 channels:
   - conda-forge
   - defaults
@@ -14,6 +14,10 @@ dependencies:
   - pip:
     - numpy
     - onnx
-    - onnxruntime  # For model inference/testing
-    - torch  # For model conversion if needed
-    - transformers  # For model downloading/conversion
+    - onnxruntime
+    - torch
+    - torchao
+    - transformers
+    - huggingface_hub
+    - executorch
+    - sentencepiece

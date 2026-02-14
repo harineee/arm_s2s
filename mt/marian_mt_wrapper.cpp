@@ -32,6 +32,101 @@ void MarianMTWrapper::load_basic_vocab() {
     };
 }
 
+// Minimal JSON parser for vocab.json ({"token": id, ...} format)
+bool MarianMTWrapper::load_vocab_json(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return false;
+
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
+    f.close();
+
+    // Parse JSON object: iterate through "key": value pairs
+    size_t pos = content.find('{');
+    if (pos == std::string::npos) return false;
+    pos++;
+
+    while (pos < content.size()) {
+        // Skip whitespace
+        while (pos < content.size() && std::isspace(content[pos])) pos++;
+        if (pos >= content.size() || content[pos] == '}') break;
+
+        // Parse key (quoted string)
+        if (content[pos] != '"') { pos++; continue; }
+        pos++; // skip opening quote
+        std::string key;
+        while (pos < content.size() && content[pos] != '"') {
+            if (content[pos] == '\\' && pos + 1 < content.size()) {
+                pos++;
+                if (content[pos] == 'u' && pos + 4 < content.size()) {
+                    // Parse \uXXXX unicode escape
+                    std::string hex = content.substr(pos + 1, 4);
+                    unsigned int code = 0;
+                    for (char c : hex) {
+                        code <<= 4;
+                        if (c >= '0' && c <= '9') code |= (c - '0');
+                        else if (c >= 'a' && c <= 'f') code |= (c - 'a' + 10);
+                        else if (c >= 'A' && c <= 'F') code |= (c - 'A' + 10);
+                    }
+                    // Convert to UTF-8
+                    if (code < 0x80) {
+                        key += static_cast<char>(code);
+                    } else if (code < 0x800) {
+                        key += static_cast<char>(0xC0 | (code >> 6));
+                        key += static_cast<char>(0x80 | (code & 0x3F));
+                    } else {
+                        key += static_cast<char>(0xE0 | (code >> 12));
+                        key += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                        key += static_cast<char>(0x80 | (code & 0x3F));
+                    }
+                    pos += 4;
+                } else if (content[pos] == 'n') {
+                    key += '\n';
+                } else if (content[pos] == 't') {
+                    key += '\t';
+                } else if (content[pos] == '"') {
+                    key += '"';
+                } else if (content[pos] == '\\') {
+                    key += '\\';
+                } else {
+                    key += content[pos];
+                }
+            } else {
+                key += content[pos];
+            }
+            pos++;
+        }
+        if (pos < content.size()) pos++; // skip closing quote
+
+        // Skip colon
+        while (pos < content.size() && content[pos] != ':') pos++;
+        if (pos < content.size()) pos++;
+
+        // Skip whitespace
+        while (pos < content.size() && std::isspace(content[pos])) pos++;
+
+        // Parse value (integer)
+        std::string num_str;
+        while (pos < content.size() && (std::isdigit(content[pos]) || content[pos] == '-')) {
+            num_str += content[pos];
+            pos++;
+        }
+
+        if (!key.empty() && !num_str.empty()) {
+            int64_t id = std::stoll(num_str);
+            token_to_id_[key] = id;
+            id_to_token_[id] = key;
+        }
+
+        // Skip comma
+        while (pos < content.size() && content[pos] != ',' && content[pos] != '}') pos++;
+        if (pos < content.size() && content[pos] == ',') pos++;
+    }
+
+    std::cout << "Loaded vocab.json: " << token_to_id_.size() << " tokens" << std::endl;
+    return !token_to_id_.empty();
+}
+
 // ---------------------------------------------------------------------------
 // Init: load ONNX sessions + SentencePiece models
 // ---------------------------------------------------------------------------
@@ -42,6 +137,11 @@ bool MarianMTWrapper::init(const std::string& model_path) {
         model_dir_ = model_path.substr(0, last_slash + 1);
     } else {
         model_dir_ = "./";
+    }
+
+    // ---- Load vocab.json (token→ID mapping for ONNX model) ----
+    if (!load_vocab_json(model_dir_ + "vocab.json")) {
+        std::cerr << "Warning: vocab.json not loaded, will use SentencePiece IDs directly" << std::endl;
     }
 
     // ---- SentencePiece tokenizers ----
@@ -135,13 +235,33 @@ std::vector<int64_t> MarianMTWrapper::tokenize(const std::string& text) {
 
 #ifdef USE_SENTENCEPIECE
     if (sp_source_) {
-        std::vector<int> sp_ids;
-        auto status = sp_source_->Encode(text, &sp_ids);
-        if (status.ok() && !sp_ids.empty()) {
-            for (int id : sp_ids) {
-                ids.push_back(static_cast<int64_t>(id));
+        // Use SentencePiece for segmentation, then map to vocab.json IDs
+        std::vector<std::string> pieces;
+        auto status = sp_source_->Encode(text, &pieces);
+        if (status.ok() && !pieces.empty()) {
+            if (!token_to_id_.empty()) {
+                // Map token strings → vocab.json IDs
+                for (const auto& piece : pieces) {
+                    auto it = token_to_id_.find(piece);
+                    if (it != token_to_id_.end()) {
+                        ids.push_back(it->second);
+                    } else {
+                        // Try <unk> token
+                        auto unk = token_to_id_.find("<unk>");
+                        if (unk != token_to_id_.end()) {
+                            ids.push_back(unk->second);
+                        }
+                    }
+                }
+            } else {
+                // Fallback: use SentencePiece IDs directly (less accurate)
+                std::vector<int> sp_ids;
+                sp_source_->Encode(text, &sp_ids);
+                for (int id : sp_ids) {
+                    ids.push_back(static_cast<int64_t>(id));
+                }
             }
-            ids.push_back(0);  // EOS token
+            ids.push_back(0);  // EOS token (</s> = 0)
             return ids;
         }
     }
@@ -165,6 +285,34 @@ std::vector<int64_t> MarianMTWrapper::tokenize(const std::string& text) {
 // Detokenize — uses SentencePiece target.spm
 // ---------------------------------------------------------------------------
 std::string MarianMTWrapper::detokenize(const std::vector<int64_t>& tokens) {
+    // If we have vocab.json mapping, use it for decoding
+    if (!id_to_token_.empty()) {
+        std::string result;
+        for (auto t : tokens) {
+            if (t == 0 || t == 61949) continue;  // Skip EOS and PAD
+            auto it = id_to_token_.find(t);
+            if (it != id_to_token_.end()) {
+                result += it->second;
+            }
+        }
+        // Clean SentencePiece format: replace ▁ (U+2581) with space
+        std::string cleaned;
+        for (size_t i = 0; i < result.size(); ) {
+            // Check for ▁ (UTF-8: 0xE2 0x96 0x81)
+            if (i + 2 < result.size() &&
+                (unsigned char)result[i] == 0xE2 &&
+                (unsigned char)result[i+1] == 0x96 &&
+                (unsigned char)result[i+2] == 0x81) {
+                if (!cleaned.empty()) cleaned += ' ';
+                i += 3;
+            } else {
+                cleaned += result[i];
+                i++;
+            }
+        }
+        if (!cleaned.empty()) return cleaned;
+    }
+
 #ifdef USE_SENTENCEPIECE
     if (sp_target_) {
         std::vector<int> int_ids;
@@ -314,46 +462,101 @@ std::vector<int64_t> MarianMTWrapper::generate(
         generated.push_back(next);
 
         // Try to use KV cache from decoder_with_past for remaining steps
-        // If decoder_with_past is available and outputs KV tensors, use them
-        // Otherwise fall through to the non-cached loop below
         if (decoder_past_session_ && dec_out.size() > 1) {
-            // dec_out[1..N] are past_key_values
-            // Use decoder_with_past for subsequent steps
+            // dec_out layout (25 outputs from decoder_model.onnx):
+            //   [0] logits
+            //   [1+i*4+0] present.i.decoder.key
+            //   [1+i*4+1] present.i.decoder.value
+            //   [1+i*4+2] present.i.encoder.key  (static)
+            //   [1+i*4+3] present.i.encoder.value (static)
+            //
+            // decoder_with_past expects 26 inputs:
+            //   [0] encoder_attention_mask
+            //   [1] input_ids
+            //   [2+i*4+0..3] past_key_values.i.{decoder.key, decoder.value, encoder.key, encoder.value}
+            //
+            // decoder_with_past outputs 13:
+            //   [0] logits
+            //   [1+i*2+0] present.i.decoder.key (updated)
+            //   [1+i*2+1] present.i.decoder.value (updated)
+            //   (encoder KV not output — it's static)
+
+            int num_layers = (int)(dec_out.size() - 1) / 4;  // 6
+
+            // Save encoder KV tensor data (static throughout generation)
+            struct TensorRef { float* data; std::vector<int64_t> shape; size_t count; };
+            std::vector<TensorRef> enc_kv(num_layers * 2);
+            for (int i = 0; i < num_layers; i++) {
+                int ek = 1 + i * 4 + 2;
+                int ev = 1 + i * 4 + 3;
+                enc_kv[i*2]   = {dec_out[ek].GetTensorMutableData<float>(),
+                                 dec_out[ek].GetTensorTypeAndShapeInfo().GetShape(),
+                                 dec_out[ek].GetTensorTypeAndShapeInfo().GetElementCount()};
+                enc_kv[i*2+1] = {dec_out[ev].GetTensorMutableData<float>(),
+                                 dec_out[ev].GetTensorTypeAndShapeInfo().GetShape(),
+                                 dec_out[ev].GetTensorTypeAndShapeInfo().GetElementCount()};
+            }
+
+            // Keep past outputs alive so tensor pointers remain valid
+            std::vector<Ort::Value> latest_past_out;
+            bool first_kv_step = true;
+
             for (int step = 1; step < effective_max; step++) {
                 try {
                     std::vector<Ort::Value> past_in;
 
-                    // encoder_attention_mask
+                    // [0] encoder_attention_mask
                     std::vector<int64_t> ea(input_tokens.size(), 1);
                     past_in.push_back(Ort::Value::CreateTensor<int64_t>(
                         mem, ea.data(), ea.size(), input_shape.data(), 2));
 
-                    // decoder input_ids: just the last token [1, 1]
+                    // [1] input_ids: last generated token
                     std::vector<int64_t> last_tok = {generated.back()};
                     std::vector<int64_t> one_shape = {1, 1};
                     past_in.push_back(Ort::Value::CreateTensor<int64_t>(
                         mem, last_tok.data(), 1, one_shape.data(), 2));
 
-                    // encoder_hidden_states
-                    auto eh = enc_hidden.GetTensorMutableData<float>();
-                    auto ehs = enc_hidden.GetTensorTypeAndShapeInfo().GetShape();
-                    past_in.push_back(Ort::Value::CreateTensor<float>(
-                        mem, eh,
-                        enc_hidden.GetTensorTypeAndShapeInfo().GetElementCount(),
-                        ehs.data(), ehs.size()));
-
-                    // past_key_values from previous decoder output
-                    for (size_t k = 1; k < dec_out.size(); k++) {
-                        auto* d = dec_out[k].GetTensorMutableData<float>();
-                        auto s = dec_out[k].GetTensorTypeAndShapeInfo().GetShape();
-                        size_t cnt = dec_out[k].GetTensorTypeAndShapeInfo().GetElementCount();
+                    // [2..25] past_key_values: interleave decoder KV + encoder KV
+                    for (int i = 0; i < num_layers; i++) {
+                        if (first_kv_step) {
+                            // Decoder KV from initial decoder_model output
+                            int dk = 1 + i * 4 + 0;
+                            int dv = 1 + i * 4 + 1;
+                            auto dk_shape = dec_out[dk].GetTensorTypeAndShapeInfo().GetShape();
+                            auto dv_shape = dec_out[dv].GetTensorTypeAndShapeInfo().GetShape();
+                            past_in.push_back(Ort::Value::CreateTensor<float>(
+                                mem, dec_out[dk].GetTensorMutableData<float>(),
+                                dec_out[dk].GetTensorTypeAndShapeInfo().GetElementCount(),
+                                dk_shape.data(), dk_shape.size()));
+                            past_in.push_back(Ort::Value::CreateTensor<float>(
+                                mem, dec_out[dv].GetTensorMutableData<float>(),
+                                dec_out[dv].GetTensorTypeAndShapeInfo().GetElementCount(),
+                                dv_shape.data(), dv_shape.size()));
+                        } else {
+                            // Decoder KV from latest decoder_with_past output
+                            int dk = 1 + i * 2;
+                            int dv = 1 + i * 2 + 1;
+                            auto dk_shape = latest_past_out[dk].GetTensorTypeAndShapeInfo().GetShape();
+                            auto dv_shape = latest_past_out[dv].GetTensorTypeAndShapeInfo().GetShape();
+                            past_in.push_back(Ort::Value::CreateTensor<float>(
+                                mem, latest_past_out[dk].GetTensorMutableData<float>(),
+                                latest_past_out[dk].GetTensorTypeAndShapeInfo().GetElementCount(),
+                                dk_shape.data(), dk_shape.size()));
+                            past_in.push_back(Ort::Value::CreateTensor<float>(
+                                mem, latest_past_out[dv].GetTensorMutableData<float>(),
+                                latest_past_out[dv].GetTensorTypeAndShapeInfo().GetElementCount(),
+                                dv_shape.data(), dv_shape.size()));
+                        }
+                        // Encoder KV (static from first decoder step)
                         past_in.push_back(Ort::Value::CreateTensor<float>(
-                            mem, d, cnt, s.data(), s.size()));
+                            mem, enc_kv[i*2].data, enc_kv[i*2].count,
+                            enc_kv[i*2].shape.data(), enc_kv[i*2].shape.size()));
+                        past_in.push_back(Ort::Value::CreateTensor<float>(
+                            mem, enc_kv[i*2+1].data, enc_kv[i*2+1].count,
+                            enc_kv[i*2+1].shape.data(), enc_kv[i*2+1].shape.size()));
                     }
 
-                    // Ensure we have the right number of inputs
                     if (past_in.size() != decoder_past_input_names_.size()) {
-                        // Input count mismatch — fall back to non-cached loop
                         break;
                     }
 
@@ -381,11 +584,10 @@ std::vector<int64_t> MarianMTWrapper::generate(
                     if (nt == 0) break;  // EOS
                     generated.push_back(nt);
 
-                    // Swap dec_out for next iteration
-                    dec_out = std::move(past_out);
+                    latest_past_out = std::move(past_out);
+                    first_kv_step = false;
 
                 } catch (const Ort::Exception& e) {
-                    // KV-cache path failed, fall through
                     std::cerr << "KV-cache step failed: " << e.what() << std::endl;
                     break;
                 }

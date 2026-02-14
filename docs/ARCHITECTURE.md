@@ -35,8 +35,12 @@ The speech-to-speech translation system is designed as a modular, parallel pipel
 ┌─────────────────────────────────────┐
 │  Thread 2: Machine Translation      │
 │  ┌──────────┐      ┌──────────────┐ │
-│  │ English  │─────▶│ Marian NMT   │ │
-│  │ Phrase   │      │ (EN → HI)    │ │
+│  │ English  │─────▶│ Qwen3-0.6B   │ │
+│  │ Phrase   │      │ (ExecuTorch) │ │
+│  │          │      │ + KleidiAI   │ │
+│  │          │      ├──────────────┤ │
+│  │          │      │ Marian NMT   │ │
+│  │          │      │ (Fallback)   │ │
 │  └──────────┘      └──────┬───────┘ │
 └───────────────────────────┼─────────┘
                             │
@@ -94,24 +98,58 @@ The speech-to-speech translation system is designed as a modular, parallel pipel
 - Phrase-level translation reduces latency
 - Natural speech has pauses that indicate phrase boundaries
 
-### 3. MT Module (Marian NMT)
+### 3. MT Module — Three Adaptive Translation Modes
 
-**Purpose**: Translate English phrases to Hindi
+The MT module supports three translation modes, selectable at runtime:
+
+| Mode | Backend | Latency | Quality | Method |
+|------|---------|---------|---------|--------|
+| **SPEED** | Marian NMT only | ~20ms | Good | Encoder-decoder ONNX |
+| **BALANCED** | NMT draft + LLM verify | ~150ms | Very good | Speculative decoding |
+| **QUALITY** | Full LLM autoregressive | ~500ms | Best | Token-by-token generation |
+
+#### 3a. Marian NMT (SPEED mode / draft generator)
+
+**Purpose**: Fast phrase-level translation, also generates draft for speculative mode
 
 **Key Features**:
-- Phrase-level translation (not full sentences)
-- INT8 quantization
-- CPU-only inference
-- Low-latency target (10-30 ms)
+- OPUS-MT EN→HI from Helsinki-NLP (ONNX Runtime)
+- INT8 quantization, CPU-only
+- ~20ms per phrase
 
-**Implementation Options**:
-1. **Native Marian**: Build Marian with Android NDK (complex)
-2. **ONNX Runtime**: Convert Marian model to ONNX (recommended)
-3. **Custom Inference**: Implement encoder-decoder in C++
+#### 3b. LLM Translation (Qwen3-0.6B via ExecuTorch)
 
-**Model**: OPUS-MT EN→HI from Helsinki-NLP
+**Purpose**: High-quality LLM translation with two inference modes
 
-**Latency Target**: 10-30 ms per phrase
+**Key Features**:
+- ExecuTorch runtime with XNNPACK + KleidiAI (SME2/NEON acceleration)
+- `/no_think` mode for fast, direct translation without reasoning chains
+- Deterministic output (argmax decoding)
+- INT4 quantized (8da4w, group size 128, 4-bit embeddings)
+
+**Model**: Qwen3-0.6B-Instruct (~388 MB as .pte with INT4)
+**Framework**: ExecuTorch 0.7+ with XNNPACK + KleidiAI
+
+#### 3c. NMT-Accelerated Speculative Decoding (BALANCED mode)
+
+**Purpose**: Near-LLM quality at a fraction of the latency
+
+This is the novel core of the system — a cross-architecture speculative decoding approach where an encoder-decoder NMT model drafts for a decoder-only LLM:
+
+1. **Marian NMT generates draft** (~20ms): Fast encoder-decoder produces Hindi translation
+2. **Tokenize and concatenate**: Prompt tokens + draft tokens into one sequence
+3. **Single LLM forward pass** (~80ms): LLM processes the entire sequence in parallel
+4. **Token-by-token verification**: Compare LLM's argmax prediction at each position against the draft token
+5. **Accept up to first rejection**: All matching prefix tokens are kept
+6. **Regenerate remainder**: LLM generates replacement tokens autoregressively from the rejection point
+
+**Key insight**: Unlike standard speculative decoding (small LLM drafts for large LLM), we use a fundamentally different architecture (encoder-decoder NMT) as the drafter. The NMT's ~70% token acceptance rate means most phrases need only 1 LLM forward pass instead of N.
+
+**Optimization stack**:
+- ExecuTorch XNNPACK backend with KleidiAI
+- SME2/NEON acceleration on Arm
+- INT4 quantization (8da4w, group size 128)
+- `/no_think` to disable Qwen3 reasoning chain
 
 ### 4. TTS Module (VITS)
 
@@ -185,7 +223,9 @@ The speech-to-speech translation system is designed as a modular, parallel pipel
 | Audio Capture | 0 ms | Hardware buffering |
 | ASR Processing | 120-250 ms | Chunk-based, streaming |
 | Phrase Detection | < 1 ms | Simple logic |
-| MT Translation | 10-30 ms | Phrase-level, quantized |
+| MT Translation (SPEED) | 10-30 ms | Marian NMT only |
+| MT Translation (BALANCED) | 80-150 ms | NMT draft + LLM speculative verify |
+| MT Translation (QUALITY) | 300-800 ms | Full LLM autoregressive |
 | TTS Synthesis | 80-150 ms | Chunked, streaming |
 | Audio Playback | 0 ms | Hardware buffering |
 | **Total (first audio)** | **< 500 ms** | Overlapped pipeline |

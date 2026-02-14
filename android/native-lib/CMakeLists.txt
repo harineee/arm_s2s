@@ -74,6 +74,29 @@ else()
     message(WARNING "  Run ./scripts/setup_android_deps.sh to download source")
 endif()
 
+# ---------- ExecuTorch (LLM backend) ----------
+set(ET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../libs/executorch")
+if(EXISTS "${ET_DIR}/jni/${ANDROID_ABI}/libexecutorch_jni.so")
+    set(USE_EXECUTORCH ON CACHE BOOL "" FORCE)
+
+    add_library(executorch_jni SHARED IMPORTED GLOBAL)
+    set_target_properties(executorch_jni PROPERTIES
+        IMPORTED_LOCATION "${ET_DIR}/jni/${ANDROID_ABI}/libexecutorch_jni.so"
+    )
+    if(EXISTS "${ET_DIR}/include")
+        set(ET_INCLUDE_DIR "${ET_DIR}/include" CACHE PATH "" FORCE)
+        target_include_directories(executorch_jni INTERFACE "${ET_INCLUDE_DIR}")
+    endif()
+    set(EXECUTORCH_ANDROID_FOUND TRUE CACHE BOOL "" FORCE)
+    message(STATUS "ExecuTorch: found prebuilt for ${ANDROID_ABI}")
+else()
+    # ExecuTorch will be provided via Maven AAR dependency
+    set(EXECUTORCH_ANDROID_FOUND FALSE CACHE BOOL "" FORCE)
+    message(STATUS "ExecuTorch: NOT found at ${ET_DIR}")
+    message(STATUS "  ExecuTorch will be provided via Maven AAR dependency")
+    option(USE_EXECUTORCH "Enable LLM translation via ExecuTorch" OFF)
+endif()
+
 # ---------- Component libraries ----------
 # These can now find the imported targets above
 add_subdirectory(../../mt  mt)
@@ -107,4 +130,9 @@ endif()
 # Link ORT .so to native-lib (also ensures it's packaged in APK)
 if(ONNXRUNTIME_ANDROID_FOUND)
     target_link_libraries(native-lib onnxruntime)
+endif()
+
+# Link ExecuTorch .so to native-lib
+if(EXECUTORCH_ANDROID_FOUND)
+    target_link_libraries(native-lib executorch_jni)
 endif()

@@ -18,6 +18,7 @@
   "decoder_start_token_id": 61949,
   "decoder_vocab_size": 61950,
   "dropout": 0.1,
+  "dtype": "float32",
   "encoder_attention_heads": 8,
   "encoder_ffn_dim": 2048,
   "encoder_layerdrop": 0.0,

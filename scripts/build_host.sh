@@ -18,7 +18,7 @@ cd "$BUILD_DIR"
 cmake "$PROJECT_ROOT/host" \
     -DCMAKE_BUILD_TYPE=Release
 
-cmake --build . -j"$(nproc)"
+cmake --build . -j"$(nproc 2>/dev/null || sysctl -n hw.ncpu)"
 
 echo ""
 echo "Build complete: $BUILD_DIR/translation_host"

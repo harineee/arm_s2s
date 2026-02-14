@@ -71,9 +71,9 @@ public class MainActivity extends AppCompatActivity {
 
         // Extract models in background
         new Thread(() -> {
-            boolean ok = ModelManager.copyModelsFromAssets(this);
+            ModelManager.copyModelsFromAssets(this);
             boolean verified = ModelManager.verifyModels(this);
-            modelsReady = ok && verified;
+            modelsReady = verified;
 
             runOnUiThread(() -> {
                 if (modelsReady) {

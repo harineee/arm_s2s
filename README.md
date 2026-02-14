@@ -20,12 +20,15 @@
 
 ```
 Audio In (16 kHz) → [ASR] → English text → [Phrase detect] → [MT] → Hindi text → [TTS] → Audio Out
-                    whisper.cpp            Marian ONNX              Piper VITS
+                    whisper.cpp            Qwen3-0.6B (ExecuTorch)    Piper VITS
+                                           Marian ONNX (fallback)
 ```
 
 - **Three pipeline threads** (ASR, MT, TTS) with **lock-free SPSC queues** between them.
 - **Phrase-level translation**: boundaries on pause (&gt;150 ms), word count (2–5), or punctuation so we don’t wait for full sentences.
-- **C++ only** at runtime: whisper.cpp, ONNX Runtime, SentencePiece (statically linked on Android).
+- **Three translation modes**: SPEED (NMT only, ~20ms), BALANCED (NMT draft + LLM speculative verify, ~150ms), QUALITY (full LLM, ~500ms).
+- **NMT-accelerated speculative decoding**: Marian NMT drafts, Qwen3-0.6B (ExecuTorch + KleidiAI) verifies in one forward pass.
+- **C++ only** at runtime: whisper.cpp, ExecuTorch, ONNX Runtime, SentencePiece (statically linked on Android).
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.
 
@@ -78,6 +81,10 @@ conda install onnxruntime onnxruntime-tools onnx -c conda-forge
 ./scripts/download_mt_model.sh
 ./scripts/download_tts_model.sh
 
+# Download + export LLM model (optional, for ExecuTorch translation)
+./scripts/download_llm_model.sh
+./scripts/export_llm_model.sh
+
 # Quantize for smaller size (optional for host, required for mobile)
 pip install onnxruntime
 python -c "
@@ -91,12 +98,27 @@ for name in ['encoder_model', 'decoder_model', 'decoder_with_past_model']:
 # Build host binary
 ./scripts/build_host.sh
 
-# Run (file mode)
+# Run (file mode — NMT only)
 ./build-host/translation_host \
   --asr-model models/asr/ggml-tiny.en.bin \
   --mt-model models/mt/onnx/encoder_model.onnx \
   --tts-model models/tts/hi_IN-rohan-medium.onnx \
   --input your_audio.wav --output hindi.wav
+
+# Run with LLM translation — balanced mode (speculative decoding, default)
+./build-host/translation_host \
+  --asr-model models/asr/ggml-tiny.en.bin \
+  --mt-model models/mt/onnx/encoder_model.onnx \
+  --tts-model models/tts/hi_IN-rohan-medium.onnx \
+  --llm-model models/llm/qwen3_0.6B.pte \
+  --llm-tokenizer models/llm/Qwen3-0.6B/tokenizer.json \
+  --translation-mode balanced \
+  --input your_audio.wav --output hindi.wav
+
+# Translation modes: speed | balanced | quality
+#   speed    — NMT only (~20ms, good quality)
+#   balanced — NMT draft + LLM speculative verify (~150ms, very good)
+#   quality  — Full LLM autoregressive (~500ms, best quality)
 ```
 
 ---
@@ -121,16 +143,22 @@ Open the app → allow microphone → wait for “Ready” (first run extracts ~
 
 ---
 
-## Model Sizes (INT8, Mobile)
+## Model Sizes (Quantized, Mobile)
 
-| Component | Size |
-|-----------|------|
-| ASR (ggml-tiny.en.bin) | 74 MB |
-| MT (encoder + decoder + decoder_with_past) | ~217 MB |
-| TTS (Piper Hindi) | ~17 MB |
-| **Total in APK** | ~312 MB |
+| Component | Size | Quantization |
+|-----------|------|-------------|
+| ASR (ggml-tiny.en.bin) | 74 MB | ggml |
+| MT encoder (encoder_model.onnx) | 194 MB | INT8 |
+| MT decoder (decoder_model.onnx) | 340 MB | INT8 |
+| MT tokenizers (spm + configs) | ~3 MB | — |
+| TTS (Piper Hindi VITS) | 60 MB | ONNX |
+| LLM (Qwen3-0.6B .pte) | 388 MB | INT4 (8da4w) |
+| **Total in APK (NMT only)** | **~683 MB** | |
+| **Total in APK (with LLM)** | **~1.07 GB** | |
 
 Peak RAM on device is estimated ~765 MB; suitable for 4–6 GB phones.
+
+See [docs/REPORT.md](docs/REPORT.md) for the full project report.
 
 ---
 
@@ -139,8 +167,11 @@ Peak RAM on device is estimated ~765 MB; suitable for 4–6 GB phones.
 | Component | Choice | Rationale |
 |-----------|--------|-----------|
 | ASR | whisper.cpp (tiny.en) | C++, NEON-friendly, no ONNX; low latency |
-| MT | Marian NMT (ONNX) | Dedicated NMT, 10–30 ms per phrase; INT8 for mobile |
+| MT (LLM) | Qwen3-0.6B (ExecuTorch) | LLM translation via ExecuTorch + KleidiAI; INT4 quantized |
+| MT (NMT) | Marian NMT (ONNX) | Fast draft for speculative decoding; INT8, 10–30 ms |
+| Speculative decoding | NMT draft + LLM verify | Cross-architecture: encoder-decoder drafts for decoder-only LLM |
 | TTS | Piper VITS (ONNX) | Single-stage, Hindi support; INT8 quantized |
+| LLM Runtime | ExecuTorch (C++) | XNNPACK + KleidiAI for SME2/NEON on ARM |
 | Runtime | ONNX Runtime (C++) | One stack for MT + TTS on Android |
 | Tokenization | SentencePiece (C++) | Same as Marian; built from source or prebuilt for Android |
 | Concurrency | Lock-free SPSC queues | Avoids mutex latency spikes on mobile |

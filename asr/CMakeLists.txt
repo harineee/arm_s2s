@@ -4,10 +4,12 @@ project(ASRModule)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Enable NEON for Arm
+# Enable NEON for Arm (Apple Silicon has NEON by default, no flag needed)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8-a+simd")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8-a+simd")
+    if(NOT APPLE)
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=armv8-a+simd")
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=armv8-a+simd")
+    endif()
 endif()
 
 # Optimization flags (removed -ffast-math for whisper.cpp compatibility)
