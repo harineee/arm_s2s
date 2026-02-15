@@ -1,8 +1,8 @@
 /**
  * MT wrapper — three-mode translation routing:
- *   SPEED:    Marian NMT only (~20ms)
- *   BALANCED: NMT draft + LLM speculative verify (~150ms)
- *   QUALITY:  Full LLM autoregressive generation (~500ms)
+ *   SPEED:    Marian NMT only (~49ms, correct Hindi)
+ *   BALANCED: NMT draft + LLM speculative verify (65% acceptance)
+ *   QUALITY:  NMT draft + LLM refinement (same path as Balanced)
  */
 
 #ifndef MT_WRAPPER_H
@@ -71,7 +71,7 @@ private:
     bool use_placeholder_;
     bool use_llm_ = false;
     bool use_nmt_ = false;
-    TranslationMode mode_ = TranslationMode::BALANCED;
+    TranslationMode mode_ = TranslationMode::SPEED;
 };
 
 #endif // MT_WRAPPER_H

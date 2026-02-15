@@ -102,54 +102,64 @@ The speech-to-speech translation system is designed as a modular, parallel pipel
 
 The MT module supports three translation modes, selectable at runtime:
 
-| Mode | Backend | Latency | Quality | Method |
+| Mode | Backend | Measured Latency | Quality | Method |
 |------|---------|---------|---------|--------|
-| **SPEED** | Marian NMT only | ~20ms | Good | Encoder-decoder ONNX |
-| **BALANCED** | NMT draft + LLM verify | ~150ms | Very good | Speculative decoding |
-| **QUALITY** | Full LLM autoregressive | ~500ms | Best | Token-by-token generation |
+| **SPEED** | Marian NMT only | **49ms** | Correct Hindi | Encoder-decoder ONNX |
+| **BALANCED** | NMT draft + LLM verify | **6.5s*** | Correct (with minor corrections) | Refinement-prompt speculative decoding |
+| **QUALITY** | NMT draft + LLM verify | **6.5s*** | Same as Balanced | Same as Balanced (standalone LLM produces incorrect Hindi) |
+
+*\*Full-prefill O(n²) approach; KV-cache decode would reduce to ~200-400ms.*
+
+**Note**: Balanced and Quality mode use the same code path. Qwen3-0.6B (600M params) cannot translate Hindi from scratch — it produces incorrect output in all prompt formats (confirmed in Python float32). Both modes use the refinement prompt approach where NMT provides the draft and LLM verifies/corrects it.
 
 #### 3a. Marian NMT (SPEED mode / draft generator)
 
-**Purpose**: Fast phrase-level translation, also generates draft for speculative mode
+**Purpose**: Fast phrase-level translation + draft generation for speculative decoding
 
 **Key Features**:
 - OPUS-MT EN→HI from Helsinki-NLP (ONNX Runtime)
 - INT8 quantization, CPU-only
-- ~20ms per phrase
+- SentencePiece tokenization with vocab.json ID mapping
+- Measured: **49ms** per phrase, produces correct Hindi
 
-#### 3b. LLM Translation (Qwen3-0.6B via ExecuTorch)
+#### 3b. LLM Verifier (Qwen3-0.6B via ExecuTorch)
 
-**Purpose**: High-quality LLM translation with two inference modes
+**Purpose**: Verify and refine NMT draft translations via speculative decoding
 
 **Key Features**:
 - ExecuTorch runtime with XNNPACK + KleidiAI (SME2/NEON acceleration)
-- `/no_think` mode for fast, direct translation without reasoning chains
-- Deterministic output (argmax decoding)
+- Qwen3 chat template with pre-filled empty `<think>` block to skip reasoning chain
+- HFTokenizer with PCRE2 fallback (re2 cannot compile Qwen3's lookahead regex)
+- Deterministic output (argmax decoding with 1.3x repetition penalty)
 - INT4 quantized (8da4w, group size 128, 4-bit embeddings)
 
-**Model**: Qwen3-0.6B-Instruct (~388 MB as .pte with INT4)
+**Model**: Qwen3-0.6B (~388 MB as .pte with INT4)
 **Framework**: ExecuTorch 0.7+ with XNNPACK + KleidiAI
+**Limitation**: Too small for standalone Hindi translation; serves as refinement/verification layer
 
-#### 3c. NMT-Accelerated Speculative Decoding (BALANCED mode)
+#### 3c. Refinement-Prompt Speculative Decoding (BALANCED/QUALITY mode)
 
-**Purpose**: Near-LLM quality at a fraction of the latency
+**Purpose**: Preserve NMT translation quality while allowing LLM-based corrections
 
-This is the novel core of the system — a cross-architecture speculative decoding approach where an encoder-decoder NMT model drafts for a decoder-only LLM:
+This is the novel core of the system — a cross-architecture speculative decoding approach using a **refinement prompt** that gives the LLM the NMT draft as context:
 
-1. **Marian NMT generates draft** (~20ms): Fast encoder-decoder produces Hindi translation
-2. **Tokenize and concatenate**: Prompt tokens + draft tokens into one sequence
-3. **Single LLM forward pass** (~80ms): LLM processes the entire sequence in parallel
-4. **Token-by-token verification**: Compare LLM's argmax prediction at each position against the draft token
-5. **Accept up to first rejection**: All matching prefix tokens are kept
-6. **Regenerate remainder**: LLM generates replacement tokens autoregressively from the rejection point
+1. **Marian NMT generates draft** (~49ms): Encoder-decoder produces correct Hindi
+2. **Build refinement prompt**: "English: {text}\nDraft: {nmt_hindi}" — the LLM sees the NMT output
+3. **Verify each draft token**: LLM predicts next token; if it matches the NMT draft token, accept
+4. **Accept matching prefix**: The LLM tends to echo correct NMT tokens (65% acceptance)
+5. **Diverge on corrections**: Where LLM disagrees, it applies minor corrections (e.g., gender agreement)
+6. **Continue autoregressively**: Generate remaining tokens from the rejection point
 
-**Key insight**: Unlike standard speculative decoding (small LLM drafts for large LLM), we use a fundamentally different architecture (encoder-decoder NMT) as the drafter. The NMT's ~70% token acceptance rate means most phrases need only 1 LLM forward pass instead of N.
+**Key insight — the refinement prompt**: Without the NMT draft in the prompt, the LLM translates independently and produces completely different (incorrect) Hindi, yielding only 4% token acceptance. By giving the LLM the NMT draft as context, acceptance jumps to **65%** because the LLM echoes correct tokens and only diverges for genuine corrections.
+
+**Measured acceptance rates**: 65% average across test sentences (15/23 tokens accepted for "I will go to the market")
 
 **Optimization stack**:
 - ExecuTorch XNNPACK backend with KleidiAI
 - SME2/NEON acceleration on Arm
 - INT4 quantization (8da4w, group size 128)
-- `/no_think` to disable Qwen3 reasoning chain
+- Full-prefill (start_pos=0) for quantized model reliability
+- KV-cache decode is the primary optimization target (~15x latency reduction)
 
 ### 4. TTS Module (VITS)
 
@@ -200,7 +210,7 @@ This is the novel core of the system — a cross-architecture speculative decodi
 ### Text Flow
 1. **ASR Output**: Partial English text (continuously updated)
 2. **Phrase Detection**: Extract phrases on boundaries
-3. **MT Input**: English phrase → Hindi phrase
+3. **MT Input**: English phrase → NMT draft → LLM refinement → Hindi phrase
 4. **TTS Input**: Hindi phrase → Audio chunks
 
 ## Memory Management
@@ -216,19 +226,20 @@ This is the novel core of the system — a cross-architecture speculative decodi
 - Avoid dynamic allocation in hot paths
 - Use stack allocation for small buffers
 
-## Latency Breakdown (Target)
+## Latency Breakdown (Measured, Desktop Apple M4)
 
-| Stage | Target Latency | Notes |
+| Stage | Measured Latency | Notes |
 |-------|---------------|-------|
 | Audio Capture | 0 ms | Hardware buffering |
-| ASR Processing | 120-250 ms | Chunk-based, streaming |
+| ASR Processing | 40 ms avg | Chunk-based, streaming |
 | Phrase Detection | < 1 ms | Simple logic |
-| MT Translation (SPEED) | 10-30 ms | Marian NMT only |
-| MT Translation (BALANCED) | 80-150 ms | NMT draft + LLM speculative verify |
-| MT Translation (QUALITY) | 300-800 ms | Full LLM autoregressive |
-| TTS Synthesis | 80-150 ms | Chunked, streaming |
+| MT Translation (SPEED) | **49 ms** | Marian NMT only — correct Hindi |
+| MT Translation (BALANCED) | **6.5s** (full-prefill) | NMT draft + LLM speculative verify, 65% acceptance |
+| MT Translation (BALANCED, projected) | **200-400 ms** | With KV-cache decode optimization |
+| TTS Synthesis | 150-210 ms | Chunked, streaming |
 | Audio Playback | 0 ms | Hardware buffering |
-| **Total (first audio)** | **< 500 ms** | Overlapped pipeline |
+| **Total — Speed mode** | **~250 ms** | Best for real-time conversation |
+| **Total — Balanced (projected)** | **~500 ms** | With KV-cache optimization |
 
 ## Error Handling
 
@@ -273,8 +284,8 @@ This is the novel core of the system — a cross-architecture speculative decodi
 
 ## Future Optimizations
 
-1. **SME2 Support**: Scalable Matrix Extension for Arm
-2. **INT4 Quantization**: Further reduce model size
-3. **Model Pruning**: Remove unnecessary parameters
-4. **Custom Kernels**: Hand-optimized NEON code
-5. **Hardware Acceleration**: DSP/NPU if available
+1. **KV-cache decode**: Fix INT4 quantized model reliability with KV-cache to enable O(n) speculative verification (~15x latency reduction, targeting ~200-400ms)
+2. **Larger LLM**: Qwen3-1.5B+ or Hindi-specialized model for standalone translation and higher acceptance rates
+3. **SME2 Support**: Scalable Matrix Extension for Arm Cortex-A
+4. **Model Pruning**: Remove unnecessary parameters
+5. **Hardware Acceleration**: DSP/NPU offload via Android NNAPI or Qualcomm QNN

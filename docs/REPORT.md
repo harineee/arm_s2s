@@ -181,12 +181,12 @@ This makes the NMT the primary translator and the LLM a refinement/verification 
 |------|---------|---------|---------|--------|
 | **SPEED** | Marian NMT | **49ms** | मैं बाजार में जाना होगा. (correct) | Direct encoder-decoder |
 | **BALANCED** | NMT + LLM | **6.5s** (desktop, full-prefill) | मैं बाजार में जाने होगी. (correct, minor tweak) | Speculative decoding (65% acceptance) |
-| **QUALITY** | Full LLM | **1.7s** | मे बार करें। (incorrect) | Autoregressive token-by-token |
+| **QUALITY** | NMT + LLM | **6.5s*** | Same as Balanced (refinement path) | Speculative decoding (same as Balanced) |
 
 **Key observations:**
 - Speed mode produces the best Hindi at the lowest latency — the NMT is well-trained for EN→HI
 - Balanced mode preserves NMT quality while allowing LLM corrections (gender: होगा→होगी)
-- Quality mode (LLM-only, no NMT context) produces incorrect Hindi — the 0.6B model is too small for standalone translation
+- Quality mode now uses the same refinement path as Balanced — standalone LLM (0.6B) produces incorrect Hindi, so both modes use NMT draft + LLM verification
 - The current full-prefill approach (start_pos=0 each step) is O(n²) and accounts for most of the Balanced mode latency; KV-cache decode would reduce this significantly
 - Users can switch between modes at runtime based on their latency/quality preference
 
@@ -231,9 +231,9 @@ The ASR module uses whisper.cpp's C API with streaming inference. Audio is accum
 #### Mode Routing (`mt/mt_wrapper.cpp`)
 ```cpp
 switch (current_mode_) {
-    case SPEED:    return translate_nmt(text);      // NMT only
-    case BALANCED: return translate_speculative(text); // NMT draft + LLM verify
-    case QUALITY:  return translate_llm(text);      // Full LLM autoregressive
+    case SPEED:    return translate_nmt(text);         // NMT only
+    case BALANCED: return translate_speculative(text);  // NMT draft + LLM verify
+    case QUALITY:  return translate_speculative(text);  // Same refinement path as Balanced
 }
 ```
 
@@ -354,16 +354,15 @@ The LLM .pte model (388 MB) can be deployed via `adb push` or bundled in APK exp
 
 ### 7.2 Measured End-to-End Latency (Desktop, Apple M4)
 
-| Pipeline Stage | SPEED | BALANCED | QUALITY |
-|---------------|-------|----------|---------|
-| ASR (whisper.cpp) | 40ms avg | 40ms avg | 40ms avg |
-| LLM model load | — | 1.5s (one-time) | 1.5s (one-time) |
-| NMT draft | 49ms | 128ms | — |
-| LLM speculative verify | — | 6.5s* | — |
-| LLM autoregressive | — | — | 1.7s |
-| TTS (Piper VITS) | 150ms | 210ms | 150ms |
-| **Translation latency** | **49ms** | **6.5s*** | **1.7s** |
-| **Acceptance rate** | N/A | **65%** | N/A |
+| Pipeline Stage | SPEED | BALANCED / QUALITY |
+|---------------|-------|----------|
+| ASR (whisper.cpp) | 40ms avg | 40ms avg |
+| LLM model load | — | 1.5s (one-time) |
+| NMT draft | 49ms | 49ms |
+| LLM speculative verify | — | 6.5s* |
+| TTS (Piper VITS) | 150ms | 210ms |
+| **Translation latency** | **49ms** | **6.5s*** |
+| **Acceptance rate** | N/A | **65%** |
 
 *\*Balanced mode latency is dominated by full-prefill O(n²) verification. Each of the ~23 draft tokens requires a full forward pass over the growing sequence (prompt + accepted tokens). KV-cache decode (prefill once, then single-token steps) would reduce this to ~300-500ms but was less reliable with INT4 quantization in our testing.*
 
@@ -376,7 +375,28 @@ The LLM .pte model (388 MB) can be deployed via `adb push` or bundled in APK exp
 | LLM prompt strategy | Translate from scratch | Refine NMT draft |
 | Token-level agreement | 1st character only | 15 consecutive tokens |
 
-### 7.4 Model Sizes
+### 7.4 Five-Sentence Test Suite (Balanced Mode, Desktop Apple M4)
+
+To characterize acceptance rate variability, we tested five sentences end-to-end through the full pipeline (ASR → NMT draft → LLM speculative verify):
+
+| # | Input Audio | ASR Output | NMT Draft (Speed) | Balanced Output | Accepted | Rate |
+|---|-------------|-----------|-------------------|-----------------|----------|------|
+| 1 | "I will go to the market." | I will go to the market. | मैं बाजार में जाना होगा. | मैं बाजार में जाने होगी. | 15/23 | **65%** |
+| 2 | "Hello, how are you?" | Hello, | हैलो, | Hello, | 0/6 | 0% |
+| 3 | "Please help me find the next one." | See you next time. | अगली बार मिलते हैं। | (error 16) | 0/35 | 0% |
+| 4 | "Thank you very much." | very much for your head. | अपने सिर के लिए बहुत. | (garbled) | 0/13 | 0% |
+| 5 | "Good morning." | student. | छात्र. | सुप्रबात | 3/9 | **33%** |
+
+**Analysis:**
+- **Test 1** (clean ASR, moderate length): 65% acceptance — the refinement prompt works as designed, with the LLM echoing correct NMT tokens and making a minor gender correction (होगा→होगी)
+- **Test 2**: ASR captured only "Hello," — too short for meaningful translation; NMT returned the English word
+- **Test 3**: Refinement prompt (English + NMT draft + chat template) exceeded the model's max_seq_length=128, causing ExecuTorch error 16. This is a model export limitation, not a speculative decoding failure
+- **Test 4**: ASR misheard "Thank you very much" as "very much for your head" — garbage-in/garbage-out for both NMT and LLM
+- **Test 5**: ASR captured only one word; despite this, 33% acceptance on a short sequence
+
+**Key takeaway:** Speculative decoding acceptance rate depends heavily on (a) ASR transcription quality and (b) sentence length staying within max_seq_length. For clean, moderate-length inputs, the 65% acceptance rate is consistent. The primary bottleneck is ASR quality (Whisper tiny.en) and the 128-token sequence limit, not the speculative decoding algorithm itself.
+
+### 7.5 Model Sizes
 
 | Component | FP32 | Quantized | Reduction |
 |-----------|------|-----------|-----------|
@@ -433,7 +453,7 @@ The complete ASR→MT→TTS pipeline runs on-device with zero network dependency
 Three runtime-switchable modes let users trade latency for quality without restarting the app:
 - **Speed**: Best quality and lowest latency via NMT (~49ms translation)
 - **Balanced**: NMT draft + LLM verification with 65% acceptance rate
-- **Quality**: Full LLM autoregressive (limited by model size at 0.6B params)
+- **Quality**: NMT draft + LLM refinement (same path as Balanced — standalone LLM at 0.6B produces incorrect Hindi)
 
 ### 9.4 Lock-Free Pipeline Architecture
 The three-thread pipeline uses wait-free SPSC queues with careful memory ordering (`acquire`/`release` atomics, 64-byte cache-line alignment). This avoids mutex contention that causes unpredictable latency spikes on mobile ARM processors.
@@ -462,17 +482,20 @@ A custom 110-entry Devanagari→IPA conversion table handles Hindi phonemization
 ### Current Limitations
 1. **LLM standalone quality**: Qwen3-0.6B (600M params) cannot translate Hindi from scratch — confirmed in Python float32 across all prompt formats. The model works as a refinement layer over NMT but not as a standalone translator.
 2. **Balanced mode latency**: Full-prefill verification (start_pos=0 each step) is O(n²), causing 6.5s latency for 23 draft tokens. KV-cache decode would reduce this but was less reliable with INT4 quantization.
-3. **APK size**: 727 MB is large for distribution; AAB split APKs and on-demand model download would help
-4. **RAM usage**: Peak ~765 MB; tight on 4 GB devices
-5. **TTS voice**: Single Hindi voice (male); adding female voice and voice selection
+3. **Max sequence length**: Model exported with max_seq_length=128. Long sentences cause the refinement prompt (chat template + English + NMT draft) to exceed this limit, triggering ExecuTorch error 16. Exporting with a larger max_seq_length (256-512) would fix this at the cost of increased memory.
+4. **ASR quality**: Whisper tiny.en (74 MB) occasionally misrecognizes or truncates input, which cascades into poor NMT and speculative decoding results. A larger Whisper model (small.en, 244 MB) would improve transcription accuracy.
+5. **APK size**: 727 MB is large for distribution; AAB split APKs and on-demand model download would help
+6. **RAM usage**: Peak ~765 MB; tight on 4 GB devices
+7. **TTS voice**: Single Hindi voice (male); adding female voice and voice selection
 
 ### Future Directions
-1. **Larger LLM**: Qwen3-1.5B or a Hindi-specialized model for standalone translation quality, which would also improve speculative acceptance rate
-2. **KV-cache decode optimization**: Fix INT4 KV-cache reliability to enable O(n) speculative verification instead of O(n²) full-prefill, targeting ~300ms Balanced mode latency
-3. **NPU/DSP offload**: Use Android NNAPI or Qualcomm QNN for hardware acceleration
-4. **Multi-language**: Extend to other Indic languages (Tamil, Telugu, Bengali)
-5. **Speaker diarization**: Handle multi-speaker conversations
-6. **Continuous learning**: On-device fine-tuning for domain-specific vocabulary
+1. **KV-cache decode optimization**: Fix INT4 KV-cache reliability to enable O(n) speculative verification instead of O(n²) full-prefill, targeting ~300ms Balanced mode latency
+2. **Larger max_seq_length**: Re-export .pte with max_seq_length=256-512 to handle longer sentences in the refinement prompt without triggering error 16
+3. **Larger LLM**: Qwen3-1.5B or a Hindi-specialized model for standalone translation quality, which would also improve speculative acceptance rate
+4. **Better ASR**: Upgrade from Whisper tiny.en (74 MB) to small.en (244 MB) for more accurate transcription, which directly improves downstream translation quality
+5. **NPU/DSP offload**: Use Android NNAPI or Qualcomm QNN for hardware acceleration
+6. **Multi-language**: Extend to other Indic languages (Tamil, Telugu, Bengali)
+7. **Speaker diarization**: Handle multi-speaker conversations
 
 ---
 

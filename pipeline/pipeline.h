@@ -28,8 +28,8 @@ struct PipelineConfig {
     std::string llm_model_path;       // Path to .pte file (empty = disabled)
     std::string llm_tokenizer_path;   // Path to tokenizer.json
 
-    // Translation mode: 0=SPEED (NMT), 1=BALANCED (speculative), 2=QUALITY (LLM)
-    int translation_mode = 1;
+    // Translation mode: 0=SPEED (NMT), 1=BALANCED (speculative), 2=QUALITY (refinement)
+    int translation_mode = 0;  // Default to Speed for responsive demo
 
     int sample_rate = 16000;
     int chunk_size_ms = 80;

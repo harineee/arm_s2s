@@ -1,9 +1,10 @@
 /**
  * MT wrapper — three-mode translation routing with speculative decoding.
  *
- * SPEED:    Marian NMT only (~20ms, good quality)
- * BALANCED: NMT draft + LLM speculative verification (~150ms, very good)
- * QUALITY:  Full LLM autoregressive generation (~500ms, best quality)
+ * SPEED:    Marian NMT only (~49ms, correct Hindi)
+ * BALANCED: NMT draft + LLM speculative verification (65% acceptance)
+ * QUALITY:  NMT draft + LLM refinement (same as Balanced — standalone
+ *           LLM produces incorrect Hindi at 0.6B param scale)
  */
 
 #include "mt_wrapper.h"
@@ -72,7 +73,7 @@ std::string MTWrapper::get_mode_name() const {
     switch (mode_) {
         case TranslationMode::SPEED:    return "Speed (NMT only)";
         case TranslationMode::BALANCED: return "Balanced (NMT + LLM speculative)";
-        case TranslationMode::QUALITY:  return "Quality (full LLM)";
+        case TranslationMode::QUALITY:  return "Quality (NMT + LLM refinement)";
     }
     return "Unknown";
 }
@@ -146,8 +147,13 @@ std::string MTWrapper::translate(const std::string& english_text) {
             return translate_nmt(english_text);
 
         case TranslationMode::QUALITY:
+            // Quality uses the same refinement approach as Balanced.
+            // Standalone LLM (0.6B) produces incorrect Hindi; the
+            // refinement prompt with NMT draft gives correct output.
+            if (is_llm_active() && (is_nmt_active() || !use_placeholder_)) {
+                return translate_speculative(english_text);
+            }
             if (is_llm_active()) return translate_llm(english_text);
-            // LLM unavailable — fall back to NMT
             return translate_nmt(english_text);
     }
 
